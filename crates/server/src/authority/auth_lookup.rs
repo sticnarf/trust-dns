@@ -6,6 +6,7 @@
 // copied, modified, or distributed except according to those terms.
 
 use std::iter::Chain;
+use std::slice::Iter;
 
 use trust_dns::rr::Record;
 
@@ -19,7 +20,10 @@ use authority::authority::LookupRecords;
 /// * `'r` - the recordset lifetime, subset of 'c
 /// * `'q` - the queries lifetime
 #[derive(Debug)]
-pub enum AuthLookup<'r, 'q> {
+pub enum AuthLookup<'r, 'q, I = Iter<'r, Record>>
+where
+    I: Iterator<Item = &'r Record>,
+{
     /// There is no matching name for the query
     NxDomain,
     /// There are no matching records for the query, but there are others associated to the name
@@ -28,7 +32,7 @@ pub enum AuthLookup<'r, 'q> {
     Refused,
     // TODO: change the result of a lookup to a set of chained iterators...
     /// Records
-    Records(LookupRecords<'r, 'q>),
+    Records(LookupRecords<'r, 'q, I>),
     /// Soa only differs from Records in that the lifetime on the name is from the authority, and not the query
     SOA(LookupRecords<'r, 'r>),
     /// An axfr starts with soa, chained to all the records, then another soa...
@@ -61,7 +65,10 @@ impl<'r, 'q> AuthLookup<'r, 'q> {
     }
 }
 
-impl<'r, 'q> Iterator for AuthLookup<'r, 'q> {
+impl<'r, 'q, I> Iterator for AuthLookup<'r, 'q, I>
+where
+    I: Iterator<Item = &'r Record>,
+{
     type Item = &'r Record;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -74,7 +81,10 @@ impl<'r, 'q> Iterator for AuthLookup<'r, 'q> {
     }
 }
 
-impl<'r, 'q> Default for AuthLookup<'r, 'q> {
+impl<'r, 'q, I> Default for AuthLookup<'r, 'q, I>
+where
+    I: Iterator<Item = &'r Record>,
+{
     fn default() -> Self {
         AuthLookup::NxDomain
     }

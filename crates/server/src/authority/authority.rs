@@ -11,6 +11,7 @@
 use std::borrow::Borrow;
 use std::collections::btree_map::Values;
 use std::collections::BTreeMap;
+use std::slice::Iter;
 
 #[cfg(feature = "dnssec")]
 use trust_dns::error::*;
@@ -395,70 +396,86 @@ impl Authority {
             }
 
             match require.dns_class() {
-                DNSClass::ANY => if let RData::NULL(..) = *require.rdata() {
-                    match require.rr_type() {
-                        // ANY      ANY      empty    Name is in use
-                        RecordType::ANY => {
-                            if self
-                                .lookup(
-                                    &required_name,
-                                    RecordType::ANY,
-                                    false,
-                                    SupportedAlgorithms::new(),
-                                ).is_totally_empty()
-                            {
-                                return Err(ResponseCode::NXDomain);
-                            } else {
-                                continue;
+                DNSClass::ANY => {
+                    if let RData::NULL(..) = *require.rdata() {
+                        match require.rr_type() {
+                            // ANY      ANY      empty    Name is in use
+                            RecordType::ANY => {
+                                if self
+                                    .lookup(
+                                        &required_name,
+                                        RecordType::ANY,
+                                        false,
+                                        SupportedAlgorithms::new(),
+                                    )
+                                    .is_totally_empty()
+                                {
+                                    return Err(ResponseCode::NXDomain);
+                                } else {
+                                    continue;
+                                }
+                            }
+                            // ANY      rrset    empty    RRset exists (value independent)
+                            rrset => {
+                                if self
+                                    .lookup(
+                                        &required_name,
+                                        rrset,
+                                        false,
+                                        SupportedAlgorithms::new(),
+                                    )
+                                    .is_totally_empty()
+                                {
+                                    return Err(ResponseCode::NXRRSet);
+                                } else {
+                                    continue;
+                                }
                             }
                         }
-                        // ANY      rrset    empty    RRset exists (value independent)
-                        rrset => {
-                            if self
-                                .lookup(&required_name, rrset, false, SupportedAlgorithms::new())
-                                .is_totally_empty()
-                            {
-                                return Err(ResponseCode::NXRRSet);
-                            } else {
-                                continue;
-                            }
-                        }
+                    } else {
+                        return Err(ResponseCode::FormErr);
                     }
-                } else {
-                    return Err(ResponseCode::FormErr);
-                },
-                DNSClass::NONE => if let RData::NULL(..) = *require.rdata() {
-                    match require.rr_type() {
-                        // NONE     ANY      empty    Name is not in use
-                        RecordType::ANY => {
-                            if !self
-                                .lookup(
-                                    &required_name,
-                                    RecordType::ANY,
-                                    false,
-                                    SupportedAlgorithms::new(),
-                                ).is_totally_empty()
-                            {
-                                return Err(ResponseCode::YXDomain);
-                            } else {
-                                continue;
+                }
+                DNSClass::NONE => {
+                    if let RData::NULL(..) = *require.rdata() {
+                        match require.rr_type() {
+                            // NONE     ANY      empty    Name is not in use
+                            RecordType::ANY => {
+                                if !self
+                                    .lookup(
+                                        &required_name,
+                                        RecordType::ANY,
+                                        false,
+                                        SupportedAlgorithms::new(),
+                                    )
+                                    .is_totally_empty()
+                                {
+                                    return Err(ResponseCode::YXDomain);
+                                } else {
+                                    continue;
+                                }
+                            }
+                            // NONE     rrset    empty    RRset does not exist
+                            rrset => {
+                                if !self
+                                    .lookup(
+                                        &required_name,
+                                        rrset,
+                                        false,
+                                        SupportedAlgorithms::new(),
+                                    )
+                                    .is_totally_empty()
+                                {
+                                    return Err(ResponseCode::YXRRSet);
+                                } else {
+                                    continue;
+                                }
                             }
                         }
-                        // NONE     rrset    empty    RRset does not exist
-                        rrset => {
-                            if !self
-                                .lookup(&required_name, rrset, false, SupportedAlgorithms::new())
-                                .is_totally_empty()
-                            {
-                                return Err(ResponseCode::YXRRSet);
-                            } else {
-                                continue;
-                            }
-                        }
+                    } else {
+                        return Err(ResponseCode::FormErr);
                     }
-                } else {
-                    return Err(ResponseCode::FormErr);
-                },
+                }
                 class if class == self.class =>
                 // zone     rrset    rr       RRset exists (value dependent)
                 {
@@ -468,7 +485,8 @@ impl Authority {
                             require.rr_type(),
                             false,
                             SupportedAlgorithms::new(),
-                        ).find(|rr| *rr == require)
+                        )
+                        .find(|rr| *rr == require)
                         .is_none()
                     {
                         return Err(ResponseCode::NXRRSet);
@@ -533,41 +551,45 @@ impl Authority {
         // verify sig0, currently the only authorization that is accepted.
         let sig0s: &[Record] = update_message.sig0();
         debug!("authorizing with: {:?}", sig0s);
-        if !sig0s.is_empty() && sig0s
-            .iter()
-            .filter_map(|sig0| {
-                if let RData::DNSSEC(DNSSECRData::SIG(ref sig)) = *sig0.rdata() {
-                    Some(sig)
-                } else {
-                    None
-                }
-            }).any(|sig| {
-                let name = LowerName::from(sig.signer_name());
-                let keys = self.lookup(
-                    &name,
-                    RecordType::DNSSEC(DNSSECRecordType::KEY),
-                    false,
-                    SupportedAlgorithms::new(),
-                );
-                debug!("found keys {:?}", keys);
-                // FIXME: check key usage flags and restrictions
-                keys.filter_map(|rr_set| {
-                    if let RData::DNSSEC(DNSSECRData::KEY(ref key)) = *rr_set.rdata() {
-                        Some(key)
+        if !sig0s.is_empty()
+            && sig0s
+                .iter()
+                .filter_map(|sig0| {
+                    if let RData::DNSSEC(DNSSECRData::SIG(ref sig)) = *sig0.rdata() {
+                        Some(sig)
                     } else {
                         None
                     }
-                }).any(|key| {
-                    key.verify_message(update_message, sig.sig(), sig)
-                        .map(|_| {
-                            info!("verified sig: {:?} with key: {:?}", sig, key);
-                            true
-                        }).unwrap_or_else(|_| {
-                            debug!("did not verify sig: {:?} with key: {:?}", sig, key);
-                            false
-                        })
                 })
-            }) {
+                .any(|sig| {
+                    let name = LowerName::from(sig.signer_name());
+                    let keys = self.lookup(
+                        &name,
+                        RecordType::DNSSEC(DNSSECRecordType::KEY),
+                        false,
+                        SupportedAlgorithms::new(),
+                    );
+                    debug!("found keys {:?}", keys);
+                    // FIXME: check key usage flags and restrictions
+                    keys.filter_map(|rr_set| {
+                        if let RData::DNSSEC(DNSSECRData::KEY(ref key)) = *rr_set.rdata() {
+                            Some(key)
+                        } else {
+                            None
+                        }
+                    })
+                    .any(|key| {
+                        key.verify_message(update_message, sig.sig(), sig)
+                            .map(|_| {
+                                info!("verified sig: {:?} with key: {:?}", sig, key);
+                                true
+                            })
+                            .unwrap_or_else(|_| {
+                                debug!("did not verify sig: {:?} with key: {:?}", sig, key);
+                                false
+                            })
+                    })
+                }) {
             return Ok(());
         } else {
             warn!(
@@ -799,7 +821,8 @@ impl Authority {
                                     !((k.record_type == RecordType::SOA
                                         || k.record_type == RecordType::NS)
                                         && k.name != self.origin)
-                                }).filter(|k| k.name == rr_name)
+                                })
+                                .filter(|k| k.name == rr_name)
                                 .cloned()
                                 .collect::<Vec<RrKey>>();
                             for delete in to_delete {
@@ -1371,10 +1394,12 @@ impl<'r, 'q> Iterator for AnyRecordsIter<'r, 'q> {
                     .by_ref()
                     .filter(|rr_set| {
                         query_type == RecordType::ANY || rr_set.record_type() != RecordType::SOA
-                    }).filter(|rr_set| {
+                    })
+                    .filter(|rr_set| {
                         query_type == RecordType::AXFR
                             || &LowerName::from(rr_set.name()) == query_name
-                    }).next();
+                    })
+                    .next();
 
                 if record.is_some() {
                     return record;
@@ -1400,13 +1425,16 @@ impl<'r, 'q> Iterator for AnyRecordsIter<'r, 'q> {
 
 /// The result of a lookup
 #[derive(Debug)]
-pub enum LookupRecords<'r, 'q> {
+pub enum LookupRecords<'r, 'q, I = Iter<'r, Record>>
+where
+    I: Iterator<Item = &'r Record>,
+{
     /// There is no record by the name
     NxDomain,
     /// There is no record for the given query, but there are other records at that name
     NameExists,
     /// The associate records
-    RecordsIter(RrsetRecords<'r>),
+    RecordsIter(RrsetRecords<'r, I>),
     /// A generic lookup response where anything is desired
     AnyRecordsIter(AnyRecordsIter<'r, 'q>),
 }
@@ -1436,7 +1464,10 @@ impl<'r, 'q> LookupRecords<'r, 'q> {
     }
 }
 
-impl<'r, 'q> Iterator for LookupRecords<'r, 'q> {
+impl<'r, 'q, I> Iterator for LookupRecords<'r, 'q, I>
+where
+    I: Iterator<Item = &'r Record>,
+{
     type Item = &'r Record;
 
     fn next(&mut self) -> Option<Self::Item> {

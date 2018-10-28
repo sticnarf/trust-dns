@@ -6,6 +6,8 @@
 // copied, modified, or distributed except according to those terms.
 
 use std::iter::Chain;
+use std::marker::PhantomData;
+use std::slice::Iter;
 
 use trust_dns::rr::Record;
 use trust_dns::serialize::binary::BinEncoder;
@@ -21,9 +23,15 @@ use authority::{AuthLookup, LookupRecords, Queries};
 pub struct MessageResponse<
     'q,
     'a,
-    A = AuthLookup<'a, 'q>,
-    N = Chain<LookupRecords<'q, 'a>, LookupRecords<'q, 'a>>,
+    I = Iter<'a, Record>,
+    I1 = Iter<'q, Record>,
+    I2 = Iter<'q, Record>,
+    A = AuthLookup<'a, 'q, I>,
+    N = Chain<LookupRecords<'q, 'a, I1>, LookupRecords<'q, 'a, I2>>,
 > where
+    I: Iterator<Item = &'a Record>,
+    I1: Iterator<Item = &'q Record>,
+    I2: Iterator<Item = &'q Record>,
     A: 'q + 'a + Iterator<Item = &'a Record>,
     N: 'q + 'a + Iterator<Item = &'a Record>,
 {
@@ -34,6 +42,7 @@ pub struct MessageResponse<
     additionals: Vec<&'a Record>,
     sig0: Vec<Record>,
     edns: Option<Edns>,
+    _phantom: (PhantomData<I>, PhantomData<I1>, PhantomData<I2>),
 }
 
 enum EmptyOrQueries<'q> {
@@ -58,8 +67,11 @@ impl<'q> EmitAndCount for EmptyOrQueries<'q> {
     }
 }
 
-impl<'q, 'a, A, N> MessageResponse<'q, 'a, A, N>
+impl<'q, 'a, I, I1, I2, A, N> MessageResponse<'q, 'a, I, I1, I2, A, N>
 where
+    I: Iterator<Item = &'a Record>,
+    I1: Iterator<Item = &'q Record>,
+    I2: Iterator<Item = &'q Record>,
     A: 'q + 'a + Iterator<Item = &'a Record>,
     N: 'q + 'a + Iterator<Item = &'a Record>,
 {
@@ -90,22 +102,37 @@ where
 }
 
 /// A builder for MessageResponses
-pub struct MessageResponseBuilder<'q, 'a> {
+pub struct MessageResponseBuilder<
+    'q,
+    'a,
+    I = Iter<'a, Record>,
+    I1 = Iter<'a, Record>,
+    I2 = Iter<'a, Record>,
+> where
+    I: Iterator<Item = &'a Record>,
+    I1: Iterator<Item = &'q Record>,
+    I2: Iterator<Item = &'q Record>,
+{
     queries: Option<&'q Queries<'q>>,
-    answers: Option<AuthLookup<'a, 'q>>,
-    name_servers: Option<Chain<LookupRecords<'q, 'a>, LookupRecords<'q, 'a>>>,
+    answers: Option<AuthLookup<'a, 'q, I>>,
+    name_servers: Option<Chain<LookupRecords<'q, 'a, I1>, LookupRecords<'q, 'a, I2>>>,
     additionals: Option<Vec<&'a Record>>,
     sig0: Option<Vec<Record>>,
     edns: Option<Edns>,
 }
 
-impl<'q, 'a> MessageResponseBuilder<'q, 'a> {
+impl<'q, 'a, I, I1, I2> MessageResponseBuilder<'q, 'a, I, I1, I2>
+where
+    I: Iterator<Item = &'a Record>,
+    I1: Iterator<Item = &'q Record>,
+    I2: Iterator<Item = &'q Record>,
+{
     /// Constructs a new Response
     ///
     /// # Arguments
     ///
     /// * `queries` - any optional set of Queries to associate with the Response
-    pub fn new(queries: Option<&'q Queries<'q>>) -> MessageResponseBuilder<'q, 'a> {
+    pub fn new(queries: Option<&'q Queries<'q>>) -> Self {
         MessageResponseBuilder {
             queries,
             answers: None,
@@ -117,7 +144,7 @@ impl<'q, 'a> MessageResponseBuilder<'q, 'a> {
     }
 
     /// Associate a set of answers with the response, generally owned by either a cache or [`trust_dns_server::authorith::Authority`]
-    pub fn answers(&mut self, records: AuthLookup<'a, 'q>) -> &mut Self {
+    pub fn answers(&mut self, records: AuthLookup<'a, 'q, I>) -> &mut Self {
         self.answers = Some(records);
         self
     }
@@ -125,7 +152,7 @@ impl<'q, 'a> MessageResponseBuilder<'q, 'a> {
     /// Associate a set of name_servers with the response, generally owned by either a cache or [`trust_dns_server::authorith::Authority`]
     pub fn name_servers(
         &mut self,
-        records: Chain<LookupRecords<'q, 'a>, LookupRecords<'q, 'a>>,
+        records: Chain<LookupRecords<'q, 'a, I1>, LookupRecords<'q, 'a, I2>>,
     ) -> &mut Self {
         self.name_servers = Some(records);
         self
@@ -142,7 +169,7 @@ impl<'q, 'a> MessageResponseBuilder<'q, 'a> {
     /// # Arguments
     ///
     /// * `header` - set of [Header]s for the Message
-    pub fn build(self, header: Header) -> MessageResponse<'q, 'a> {
+    pub fn build(self, header: Header) -> MessageResponse<'q, 'a, I, I1, I2> {
         MessageResponse {
             header,
             queries: self.queries,
@@ -153,6 +180,7 @@ impl<'q, 'a> MessageResponseBuilder<'q, 'a> {
             additionals: self.additionals.unwrap_or_default(),
             sig0: self.sig0.unwrap_or_default(),
             edns: self.edns,
+            _phantom: Default::default(),
         }
     }
 
@@ -168,7 +196,7 @@ impl<'q, 'a> MessageResponseBuilder<'q, 'a> {
         id: u16,
         op_code: OpCode,
         response_code: ResponseCode,
-    ) -> MessageResponse<'q, 'a> {
+    ) -> MessageResponse<'q, 'a, I, I1, I2> {
         let mut header = Header::default();
         header.set_message_type(MessageType::Response);
         header.set_id(id);
@@ -185,6 +213,7 @@ impl<'q, 'a> MessageResponseBuilder<'q, 'a> {
             additionals: self.additionals.unwrap_or_default(),
             sig0: self.sig0.unwrap_or_default(),
             edns: self.edns,
+            _phantom: Default::default(),
         }
     }
 }
@@ -214,7 +243,13 @@ mod tests {
                 .set_dns_class(DNSClass::NONE)
                 .clone();
 
-            let message = MessageResponse {
+            let message: MessageResponse<
+                Iter<Record>,
+                Iter<Record>,
+                Iter<Record>,
+                _,
+                _,
+            > = MessageResponse {
                 header: Header::new(),
                 queries: None,
                 answers: iter::repeat(&answer),
@@ -222,6 +257,7 @@ mod tests {
                 additionals: vec![],
                 sig0: vec![],
                 edns: None,
+                _phantom: Default::default(),
             };
 
             message
@@ -249,7 +285,13 @@ mod tests {
                 .set_dns_class(DNSClass::NONE)
                 .clone();
 
-            let message = MessageResponse {
+            let message: MessageResponse<
+                Iter<Record>,
+                Iter<Record>,
+                Iter<Record>,
+                _,
+                _,
+            > = MessageResponse {
                 header: Header::new(),
                 queries: None,
                 answers: iter::empty(),
@@ -257,6 +299,7 @@ mod tests {
                 additionals: vec![],
                 sig0: vec![],
                 edns: None,
+                _phantom: Default::default(),
             };
 
             message

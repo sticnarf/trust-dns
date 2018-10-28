@@ -390,10 +390,12 @@ impl RecordSet {
 
         match record.rr_type() {
             // never delete the last NS record
-            RecordType::NS => if self.records.len() <= 1 {
-                info!("ignoring delete of last NS record: {:?}", record);
-                return false;
-            },
+            RecordType::NS => {
+                if self.records.len() <= 1 {
+                    info!("ignoring delete of last NS record: {:?}", record);
+                    return false;
+                }
+            }
             // never delete SOA
             RecordType::SOA => {
                 info!("ignored delete of SOA");
@@ -501,17 +503,23 @@ impl<'r> Iterator for RrsigsByAlgorithms<'r> {
 
 /// An iterator over the RecordSet data
 #[derive(Debug)]
-pub enum RrsetRecords<'r> {
+pub enum RrsetRecords<'r, I = Iter<'r, Record>>
+where
+    I: Iterator<Item = &'r Record>,
+{
     /// There are no records in the record set
     Empty,
     /// The records associated with the record set
-    RecordsOnly(Iter<'r, Record>),
+    RecordsOnly(I),
     /// The records along with their signatures in the record set
     #[cfg(feature = "dnssec")]
     RecordsAndRrsigs(RecordsAndRrsigsIter<'r>),
 }
 
-impl<'r> RrsetRecords<'r> {
+impl<'r, I> RrsetRecords<'r, I>
+where
+    I: Iterator<Item = &'r Record>,
+{
     /// This is a best effort emptyness check
     pub fn is_empty(&self) -> bool {
         match *self {
@@ -521,7 +529,10 @@ impl<'r> RrsetRecords<'r> {
     }
 }
 
-impl<'r> Iterator for RrsetRecords<'r> {
+impl<'r, I> Iterator for RrsetRecords<'r, I>
+where
+    I: Iterator<Item = &'r Record>,
+{
     type Item = &'r Record;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -558,22 +569,18 @@ mod test {
 
         assert!(rr_set.insert(insert.clone(), 0));
         assert_eq!(rr_set.records_without_rrsigs().count(), 1);
-        assert!(
-            rr_set
-                .records_without_rrsigs()
-                .collect::<Vec<_>>()
-                .contains(&&insert)
-        );
+        assert!(rr_set
+            .records_without_rrsigs()
+            .collect::<Vec<_>>()
+            .contains(&&insert));
 
         // dups ignored
         assert!(!rr_set.insert(insert.clone(), 0));
         assert_eq!(rr_set.records_without_rrsigs().count(), 1);
-        assert!(
-            rr_set
-                .records_without_rrsigs()
-                .collect::<Vec<_>>()
-                .contains(&&insert)
-        );
+        assert!(rr_set
+            .records_without_rrsigs()
+            .collect::<Vec<_>>()
+            .contains(&&insert));
 
         // add one
         let insert1 = Record::new()
@@ -585,18 +592,14 @@ mod test {
             .clone();
         assert!(rr_set.insert(insert1.clone(), 0));
         assert_eq!(rr_set.records_without_rrsigs().count(), 2);
-        assert!(
-            rr_set
-                .records_without_rrsigs()
-                .collect::<Vec<_>>()
-                .contains(&&insert)
-        );
-        assert!(
-            rr_set
-                .records_without_rrsigs()
-                .collect::<Vec<_>>()
-                .contains(&&insert1)
-        );
+        assert!(rr_set
+            .records_without_rrsigs()
+            .collect::<Vec<_>>()
+            .contains(&&insert));
+        assert!(rr_set
+            .records_without_rrsigs()
+            .collect::<Vec<_>>()
+            .contains(&&insert1));
     }
 
     #[test]
@@ -652,49 +655,37 @@ mod test {
             .clone();
 
         assert!(rr_set.insert(insert.clone(), 0));
-        assert!(
-            rr_set
-                .records_without_rrsigs()
-                .collect::<Vec<_>>()
-                .contains(&&insert)
-        );
+        assert!(rr_set
+            .records_without_rrsigs()
+            .collect::<Vec<_>>()
+            .contains(&&insert));
         // same serial number
         assert!(!rr_set.insert(same_serial.clone(), 0));
-        assert!(
-            rr_set
-                .records_without_rrsigs()
-                .collect::<Vec<_>>()
-                .contains(&&insert)
-        );
-        assert!(
-            !rr_set
-                .records_without_rrsigs()
-                .collect::<Vec<_>>()
-                .contains(&&same_serial,)
-        );
+        assert!(rr_set
+            .records_without_rrsigs()
+            .collect::<Vec<_>>()
+            .contains(&&insert));
+        assert!(!rr_set
+            .records_without_rrsigs()
+            .collect::<Vec<_>>()
+            .contains(&&same_serial,));
 
         assert!(rr_set.insert(new_serial.clone(), 0));
         assert!(!rr_set.insert(same_serial.clone(), 0));
         assert!(!rr_set.insert(insert.clone(), 0));
 
-        assert!(
-            rr_set
-                .records_without_rrsigs()
-                .collect::<Vec<_>>()
-                .contains(&&new_serial)
-        );
-        assert!(
-            !rr_set
-                .records_without_rrsigs()
-                .collect::<Vec<_>>()
-                .contains(&&insert)
-        );
-        assert!(
-            !rr_set
-                .records_without_rrsigs()
-                .collect::<Vec<_>>()
-                .contains(&&same_serial)
-        );
+        assert!(rr_set
+            .records_without_rrsigs()
+            .collect::<Vec<_>>()
+            .contains(&&new_serial));
+        assert!(!rr_set
+            .records_without_rrsigs()
+            .collect::<Vec<_>>()
+            .contains(&&insert));
+        assert!(!rr_set
+            .records_without_rrsigs()
+            .collect::<Vec<_>>()
+            .contains(&&same_serial));
     }
 
     #[test]
@@ -722,27 +713,21 @@ mod test {
             .clone();
 
         assert!(rr_set.insert(insert.clone(), 0));
-        assert!(
-            rr_set
-                .records_without_rrsigs()
-                .collect::<Vec<_>>()
-                .contains(&&insert)
-        );
+        assert!(rr_set
+            .records_without_rrsigs()
+            .collect::<Vec<_>>()
+            .contains(&&insert));
 
         // update the record
         assert!(rr_set.insert(new_record.clone(), 0));
-        assert!(
-            !rr_set
-                .records_without_rrsigs()
-                .collect::<Vec<_>>()
-                .contains(&&insert)
-        );
-        assert!(
-            rr_set
-                .records_without_rrsigs()
-                .collect::<Vec<_>>()
-                .contains(&&new_record)
-        );
+        assert!(!rr_set
+            .records_without_rrsigs()
+            .collect::<Vec<_>>()
+            .contains(&&insert));
+        assert!(rr_set
+            .records_without_rrsigs()
+            .collect::<Vec<_>>()
+            .contains(&&new_record));
     }
 
     #[test]
@@ -799,12 +784,10 @@ mod test {
 
         assert!(rr_set.insert(insert.clone(), 0));
         assert!(!rr_set.remove(&insert, 0));
-        assert!(
-            rr_set
-                .records_without_rrsigs()
-                .collect::<Vec<_>>()
-                .contains(&&insert)
-        );
+        assert!(rr_set
+            .records_without_rrsigs()
+            .collect::<Vec<_>>()
+            .contains(&&insert));
     }
 
     #[test]
@@ -938,17 +921,15 @@ mod test {
         rrset.insert_rrsig(rrsig_ecp384);
         rrset.insert_rrsig(rrsig_ed25519);
 
-        assert!(
-            rrset
-                .records_with_rrsigs(SupportedAlgorithms::all(),)
-                .any(
-                    |r| if let RData::DNSSEC(DNSSECRData::SIG(ref sig)) = *r.rdata() {
-                        sig.algorithm() == Algorithm::ED25519
-                    } else {
-                        false
-                    },
-                )
-        );
+        assert!(rrset
+            .records_with_rrsigs(SupportedAlgorithms::all(),)
+            .any(
+                |r| if let RData::DNSSEC(DNSSECRData::SIG(ref sig)) = *r.rdata() {
+                    sig.algorithm() == Algorithm::ED25519
+                } else {
+                    false
+                },
+            ));
 
         let mut supported_algorithms = SupportedAlgorithms::new();
         supported_algorithms.set(Algorithm::ECDSAP384SHA384);
